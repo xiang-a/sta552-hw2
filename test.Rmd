@@ -1,0 +1,528 @@
+---
+title: "A Review of Missing Data Imputation and Feature Engineering Techniques in Preparation of Analytic Dataset of 1989 Study on School and Individual Factors on Dutch 7th Grade Students Test Scores"
+author: "Alice Xiang"
+output: html_document
+---
+
+```{=html}
+
+<style type="text/css">
+
+/* Cascading Style Sheets (CSS) is a stylesheet language used to describe the presentation of a document written in HTML or XML. it is a simple mechanism for adding style (e.g., fonts, colors, spacing) to Web documents. */
+
+h1.title {  /* Title - font specifications of the report title */
+  font-size: 24px;
+  font-weight:bold;
+  color: DarkRed;
+  text-align: center;
+  font-family: "Gill Sans", sans-serif;
+}
+h4.author { /* Header 4 - font specifications for authors  */
+  font-size: 20px;
+  font-family: system-ui;
+  color: DarkRed;
+  text-align: center;
+}
+h4.date { /* Header 4 - font specifications for the date  */
+  font-size: 18px;
+  font-family: system-ui;
+  color: DarkBlue;
+  text-align: center;
+}
+h1 { /* Header 1 - font specifications for level 1 section title  */
+    font-size: 22px;
+    font-family: system-ui;
+    font-weight:bold;
+    color: navy;
+    text-align: left;
+}
+h2 { /* Header 2 - font specifications for level 2 section title */
+    font-size: 20px;
+    font-weight:bold;
+    font-family: "Times New Roman", Times, serif;
+    color: navy;
+    text-align: left;
+}
+
+h3 { /* Header 3 - font specifications of level 3 section title  */
+    font-size: 18px;
+    font-weight:bold;
+    font-family: "Times New Roman", Times, serif;
+    color: navy;
+    text-align: left;
+}
+
+h4 { /* Header 4 - font specifications of level 4 section title  */
+    font-size: 16px;
+    font-family: "Times New Roman", Times, serif;
+    color: darkred;
+    text-align: left;
+}
+
+body { background-color:white; }
+
+.highlightme { background-color:yellow; }
+
+p { background-color:white; }
+
+</style>
+```
+
+```{r setup, include=FALSE}
+# load in dataset included in 'mice' library in R 
+library(mice)
+library(tidyverse)
+library(knitr)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(GGally)
+library(plotly)
+library(VIM)
+library(caret)
+library(MASS)
+library(reshape2)
+library(glmnet)
+library(cluster)
+data("brandsma")
+x<- brandsma
+```
+
+# Introduction: 
+
+The dataset is a collection of data from Snijders and Bosker (2012) adapted from the raw data from a 1989 study by H. P. Brandsma and W. M. Knuver containing information on 4106 pupils at 216 schools, found in the R mice library (1). The 14 variables of the adapted dataset are listed below, featuring demographic information on the students and schools and their pre- and post-test scores for language and mathematics. Last time, we did some initial investigation on each of the features (2) with regards to their distributions and relationships between each other. 
+
+In this exploratory analysis, we found that eleven of the fourteen features in the dataset included missing values, ranging from 0.1% to 15.15% missing within each individual feature. Depending on the nature of the missing values, we intend to use three different imputation algorithms to address the missing values present in the dataset: replacement imputation (for categorical features), regression-based imputation (for numeric features), and multiple imputation. We will construct two imputed datasets, one using replacement imputation + regression-based imputation, and the other one using multiple imputation using the R mice library. After both datasets have missing values imputed, we will compare their performance in a regression model. 
+
+Using the selected imputed dataset, we will then conduct a few feature engineering procedures encompassing feature transforming, feature selection, and feature creation. We will correct issues with skewness identified in the initial exploratory data analysis (2) and standardize the features, then use recursive feature elimination from the caret package in R and feature selection using LASSO through the glmnet package to identify features that may be able to be eliminated for the prediction of the total post-test score as a response variable. Finally, we will combine sparse categories that were identified in the initial EDA and examine the applicability of procedures such as K-means clustering and PCA to identify patterns and reduce the dimensionality of the data. 
+
+# Missing Value Imputation
+
+Missing values are an inevitable consequence of data collection, but can lead to erroneous analysis if not properly handled. Simply eliminating observations with missing values leads to loss of valuable information and can introduce bias into the analysis. Therefore, different imputation methods can be used as another means of preserving the original information collected and mitigating the issues that arise due to missing values in the data. 
+
+Missing values can be categorized as missing completely at random (MCAR), missing at random (MAR), and missing not at random (MNAR). Data is considered missing completely at random if the probability of the information being missing is the same for all observations, missing at random if the missingness of the data depends only on information that has been collected in the data, and missing not at random if the missingness of the data is dependent on information that has not been collected. The first two categories can be adequately addressed through different imputation mechanisms. 
+
+The methods of missing value imputation that will be utilized in this analysis include k nearest neighbors imputation (for categorical variables), regression imputation (for continuous variables), and multiple imputation. The first two methods will be utilized to create one imputed dataset, and the second will be utilized to create a different imputed dataset. The two will then be compared. 
+
+k-nearest neighbors imputation was implemented using the VIM package. A k-nearest neighbors approach takes k of the neighbors of an observation with a missing value, finding the observations that are the "closest" in Euclidean distances, and then uses those values to impute the missing value in the observation under consideration (3). Regression imputation uses the observed values of identified predictors in the dataset to fit a linear regression model for a selected response variable, which is then used to impute values for missing values in the response. This method can be limited by the existence of missing values in the predictors, which we will see below. Finally, multiple imputation is used to generate multiple plausible values for one missing value, which can allow for the quantifying of uncertainty in the estimation of the missing values (4). It generates multiple plausible values and then analyzes the results, generating multiple estimates that are then combined together through some algorithm. The R library mice, which stands for multiple imputation by chained equations, is capable of using different processes based on the type of variable it is imputing through an iterative process while preserving the structure of the dataset. 
+
+An initial summary of the dataset reveals the number of missing values for each of the individual features as well as some preliminary statistics. 
+
+```{r, echo = FALSE}
+mod.brandsma <- brandsma
+
+# converting any blank spaces to NAs in categorical variables
+mod.brandsma$sex[mod.brandsma$sex == ""] <- NA
+mod.brandsma$min[mod.brandsma$min == ""] <- NA
+mod.brandsma$rpg[mod.brandsma$rpg == ""] <- NA
+mod.brandsma$den[mod.brandsma$den == ""] <- NA
+
+mod.brandsma <- mod.brandsma %>% mutate(
+  sex = as.factor(sex),
+  min = as.factor(min),
+  rpg = as.factor(rpg),
+  den = as.factor(den)
+)
+
+summary(mod.brandsma)
+```
+As seen above, the features iqv, iqp, sex, ses, rpg, lpr, lpo, apr, apo, den, and ssi all have missing values. The feature with the fewest missing values is iqp, which represents the performal IQ of the student and has eight missing values, and the feature with the most missing values is ssi, which represents a score for the socioeconomic status of the school and has 622 missing values. The features that do not have missing values are sch and pup, two unique identification numbers for the student represented by the observation and the school they attend, and min, which represents the minority status of the student. 
+
+```{r, echo = FALSE}
+
+aggr(mod.brandsma, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, 
+     labels=names(data), cex.axis=.7, gap=3, ylab=c("Missing data","Pattern"))
+
+```
+
+A k-nearest neighbors algorithm can impute missing values by assigning the value most common among the k-nearest neighbors surrounding the point with the missing data. We will use it in order to impute values for the categorical features with missing values of sex, rpg, and den using the kNN() function in the VIM package and a value of k=3.
+
+```{r, echo = FALSE}
+
+# Perform KNN imputation using the VIM package
+imputedData <- kNN(mod.brandsma, variable = c(5, 8, 13), k = 3)
+
+# The resulting imputedData includes additional columns indicating which values 
+# Let's display only the original columns to see the imputed values
+
+# Display the imputed data
+summary(imputedData[1:14])
+
+```
+
+As we can see from the summary() function, the missing values for the categorical features identified above have been imputed.
+
+We will continue through regression imputation. We create a response variable of post, identified as the total post-score for each of the students and obtained by adding the language and arithmetic post-test scores together. The rest of the variables are selected as predictors. 
+
+```{r, echo = FALSE}
+# calculate total post-score as response
+
+imputedData$post <- imputedData$lpo + imputedData$apo 
+
+# remove indicators of imputation created by KNN imputation
+# imputedData <- imputedData %>% select(-`5_imp`, -`8_imp`, -`13_imp`)
+
+# predictors: iqv, iqp, sex, ses, min, rpg, lpr, apr, den, ssi
+
+# check which predictor variables have NAs that
+# summary(imputedData)
+
+# remove NAs of predictors
+comp.imputedData <- imputedData %>% dplyr::select(iqv, iqp, sex, ses, min, rpg, lpr, apr, den, post, ssi) %>% filter(is.na(iqv) == FALSE & is.na(iqp) == FALSE & is.na(ses) == FALSE & is.na(lpr) == FALSE & is.na(apr) == FALSE & is.na(ssi) == FALSE)
+summary(comp.imputedData)
+```
+
+With the observations with missing values for the predictors removed, the response variable post now has 174 observations with missing values that we will impute through regression imputation. 
+
+```{r, echo = FALSE}
+
+imp.model = lm(post ~ iqv + iqp + sex + ses + min + rpg + lpr + apr + den, data = comp.imputedData)  
+newdata = comp.imputedData[is.na(comp.imputedData$post),]       
+pred.y = predict(imp.model,  newdata, type="response")
+m0 = sum(is.na(comp.imputedData$post))      # total number of missing values
+pred.resid = resid(imp.model)    # residual
+pred.yrand = pred.y + sample(pred.resid, m0, replace = TRUE)
+comp.imputedData$post[is.na(comp.imputedData$post)] = pred.yrand
+
+summary(comp.imputedData)
+```
+
+We can see that the removal of observations where the predictor variables had missing values has led to a pretty substantial loss of information, as the imputed dataset only has 3095 observations as opposed to the original dataset's 4106, or a 24.6% loss.  
+
+We will do multiple imputation through the R library mice, setting m = 5. 
+
+```{r, echo = FALSE}
+
+init <- mice(mod.brandsma, maxit = 0)  # Check initial imputation setup
+init$method                    # View default imputation methods
+
+mod.brandsma <- mod.brandsma %>% dplyr::select(-pup, -sch)
+
+data <- mod.brandsma[, c("iqv", "iqp", "sex", "ses", "min", "rpg", "lpr", "lpo", "apr", "apo", "den", "ssi")]
+data$post <- data$lpo + data$apo
+meth <- make.method(data)
+meth["post"] <- "~I(lpr+apr)"
+pred <- make.predictorMatrix(data)
+pred[c("lpo", "apo"), "post"] <- 0
+imp.pas <- mice(data, meth = meth, m = 5, seed = 123, pred = pred,
+                print = FALSE)
+mice.brandsma <- complete(imp.pas)
+# add back ID variables
+mice.brandsma$pup <- brandsma$pup
+mice.brandsma$sch <- brandsma$sch
+
+str(mice.brandsma)
+summary(mice.brandsma)
+
+```
+
+Using multiple imputation through mice, all of the missing values for all 4106 observations were imputed. 
+
+We construct the same multiple linear regression model using both imputed datasets, with post as a response and iqv, iqp, sex, min, rpg, lpr, apr, den, and ssi as the predictors. Both models mark each of the predictors as significant at the 0.05 significance level except for min. 
+
+```{r, echo  = FALSE}
+model <- with(imp.pas, lm(post ~ iqv + iqp + sex + ses + min + rpg + lpr + apr + den + ssi))  
+summary.stats = summary(model)               # display the regression results of 
+                                             # individual imputed data set.
+summary.stats 
+
+mice_model <- pool(model)
+kable(pool.r.squared(model))
+
+model2 <- lm(post ~ iqv + iqp + sex + ses + min + rpg + lpr + apr + den + ssi, data = comp.imputedData)
+summary(model2)
+```
+
+We see that the model based on the dataset created through kNN and regression imputation has a higher estimate for the R-squared at 0.6676 as opposed to the model based on the dataset imputed through multiple imputation. However, this makes sense, as the missing values of post were imputed based on the regression model constructed with the above predictors, which likely biases the estimate of the performance of this model upwards for the model based on regression imputation; also, the second model was only based on 3095 observations as opposed to the 4106 of the mice imputed dataset, which preserved all of the information contained in the original data. The estimate for the R-squared for the regression + kNN imputed dataset is also within the confidence bounds of the R-squared of the model based on the mice imputed dataset, which doesn't indicate an obvious, significantly better performance for the dataset created through single imputation methods. Therefore, for the rest of the analysis, we proceed with the dataset created through multiple imputation. 
+
+# Feature Engineering
+
+The feature engineering methods that will be utilized in this analysis all fall in one of three categories: 
+
+1. Feature Transformation
+  - Features identified as being visibly skewed in the initial exploratory analysis will be adjusted through Box-cox transformations
+  - Features will be standardized to improve model performance on distance-based algorithms
+2. Feature Selection
+  - Recursive feature elimination and feature selection via LASSO will be implemented to select features based on a model and their            results compared to identify important features
+3. Feature Creation
+  - Categorical features with sparse categories will be regrouped
+  - PCA will be utilized to handle correlation between features and reduce the dimensionality of the data
+  - K-means clustering will be investigated to examine the existence of patterns in the data 
+
+## Feature Transformation
+
+The variables identified as having notable skewness in the initial analysis were the following: left skew observed in lpr, lpo, apo, and possibly iqv; evidence of right skew appears in ssi and ses.
+
+We can examine their distributions in the following histograms. 
+
+```{r, echo = FALSE}
+h1 <- ggplot(mice.brandsma, aes(x = iqv)) + geom_histogram(color = "#32373B", fill = "#C83E4D", binwidth = 1, na.rm = TRUE) 
+h2 <- ggplot(mice.brandsma, aes(x = ses)) + geom_histogram(color = "#32373B", fill = "#F4D6CC", binwidth = 4, na.rm = TRUE)
+h3 <- ggplot(mice.brandsma, aes(x = lpr)) + geom_histogram(color = "#32373B", fill = "#F4B860", binwidth = 3, na.rm = TRUE)
+h4 <- ggplot(mice.brandsma, aes(x = lpo)) + geom_histogram(color = "#32373B", fill = "#C83E4D", binwidth = 5, na.rm = TRUE)
+h5 <- ggplot(mice.brandsma, aes(x = apo)) + geom_histogram(color = "#32373B", fill = "#F4D6CC", binwidth = 2.5, na.rm = TRUE)
+h6 <- ggplot(mice.brandsma, aes(x = ssi)) + geom_histogram(color = "#32373B", fill = "#F4B860", binwidth = 2, na.rm = TRUE)
+
+grid.arrange(h1, h2, h3, h4, h5, h6, nrow = 2, ncol = 3)
+
+```
+
+As we can see, there is some pretty obvious left skew in lpr and lpo, though all of the distributions do seem unimodal. We conduct box-cox transformations on each of the above features to create transformed versions of these features, shifting the variables of ses and iqv by 8 and 18 respectively in order to keep them positive, as the box-cox only works for nonnegative values. 
+
+```{r}
+par(mfrow = c(2, 3))
+
+# iqv - need to add constant of 8 to keep response nonnegative
+boxcox_iqv <- boxcox(lm(mice.brandsma$iqv+8 ~ 1), lambda = seq(0, 3, by = 0.1))
+title("Box-Cox Transformation")
+optimal_lambda <- boxcox_iqv$x[which.max(boxcox_iqv$y)]
+
+mice.brandsma$tiqv <- if (optimal_lambda == 0) {
+  log(mice.brandsma$iqv+8)
+} else {
+  ((mice.brandsma$iqv+8)^optimal_lambda - 1) / optimal_lambda
+}
+
+# ses - need to add constant of 18 to keep response nonnegative
+
+boxcox_ses <- boxcox(lm(mice.brandsma$ses+18 ~ 1), lambda = seq(0, 3, by = 0.1))
+title("Box-Cox Transformation")
+optimal_lambda <- boxcox_ses$x[which.max(boxcox_ses$y)]
+
+mice.brandsma$tses <- if (optimal_lambda == 0) {
+  log(mice.brandsma$ses+18)
+} else {
+  ((mice.brandsma$ses+18)^optimal_lambda - 1) / optimal_lambda
+}
+
+# lpr
+boxcox_lpr <- boxcox(lm(mice.brandsma$lpr ~ 1), lambda = seq(0, 3, by = 0.1))
+title("Box-Cox Transformation")
+optimal_lambda <- boxcox_lpr$x[which.max(boxcox_lpr$y)]
+
+mice.brandsma$tlpr <- if (optimal_lambda == 0) {
+  log(mice.brandsma$lpr)
+} else {
+  (mice.brandsma$lpr^optimal_lambda - 1) / optimal_lambda
+}
+
+# lpo
+boxcox_lpo <- boxcox(lm(mice.brandsma$lpo ~ 1), lambda = seq(0, 3, by = 0.1))
+title("Box-Cox Transformation")
+optimal_lambda <- boxcox_lpo$x[which.max(boxcox_lpo$y)]
+
+mice.brandsma$tlpo <- if (optimal_lambda == 0) {
+  log(mice.brandsma$lpo)
+} else {
+  (mice.brandsma$lpo^optimal_lambda - 1) / optimal_lambda
+}
+
+# apo
+boxcox_apo <- boxcox(lm(mice.brandsma$apo ~ 1), lambda = seq(0, 3, by = 0.1))
+title("Box-Cox Transformation")
+optimal_lambda <- boxcox_apo$x[which.max(boxcox_apo$y)]
+
+mice.brandsma$tapo <- if (optimal_lambda == 0) {
+  log(mice.brandsma$apo)
+} else {
+  (mice.brandsma$apo^optimal_lambda - 1) / optimal_lambda
+}
+
+# ssi 
+boxcox_ssi <- boxcox(lm(mice.brandsma$ssi ~ 1), lambda = seq(0, 3, by = 0.1))
+title("Box-Cox Transformation")
+optimal_lambda <- boxcox_ssi$x[which.max(boxcox_ssi$y)]
+
+mice.brandsma$tssi <- if (optimal_lambda == 0) {
+  log(mice.brandsma$ssi)
+} else {
+  (mice.brandsma$ssi^optimal_lambda - 1) / optimal_lambda
+}
+
+h1 <- ggplot(mice.brandsma, aes(x = tiqv)) + geom_histogram(color = "#32373B", fill = "#C83E4D", bins = 15) 
+h2 <- ggplot(mice.brandsma, aes(x = tses)) + geom_histogram(color = "#32373B", fill = "#F4D6CC", bins = 15)
+h3 <- ggplot(mice.brandsma, aes(x = tlpr)) + geom_histogram(color = "#32373B", fill = "#F4B860", bins = 15)
+h4 <- ggplot(mice.brandsma, aes(x = tlpo)) + geom_histogram(color = "#32373B", fill = "#C83E4D", bins = 15)
+h5 <- ggplot(mice.brandsma, aes(x = tapo)) + geom_histogram(color = "#32373B", fill = "#F4D6CC", bins = 15)
+h6 <- ggplot(mice.brandsma, aes(x = tssi)) + geom_histogram(color = "#32373B", fill = "#F4B860", bins = 15)
+
+grid.arrange(h1, h2, h3, h4, h5, h6, nrow = 2, ncol = 3)
+
+```
+
+The transformed values of iqv, lpr, lpo, and ssi do seem more centered; however, apo and ses still do not seem to be distributed normally. 
+
+We then create a function to standardize each of the variables based on their mean and standard deviation, centering them at 0. Certain algorithms, such as those based on Euclidean distances such as k-means clustering and principal component anaysis, can weight features that have larger magnitudes because of their units compared to those with smaller magnitudes. Standardizing the features can improve their performance.
+
+
+```{r, echo = FALSE}
+standardize <- function(x) {
+  return((x - mean(x)) / sd(x))
+}
+
+mice_brandsma_stand <- mice.brandsma %>% dplyr::select(pup, sch, sex, min, rpg, den, tlpr, tses, tssi, tiqv, tlpo, tapo, apr, iqp) %>% mutate(
+  tlpr = standardize(tlpr),
+  tses = standardize(tses),
+  tssi = standardize(tssi),
+  tiqv = standardize(tiqv),
+  tlpo = standardize(tlpo),
+  tapo = standardize(tapo), 
+  apr = standardize(apr),
+  iqp = standardize(iqp)
+)
+
+```
+
+## Feature Selection
+
+Two methods of feature selection will be explored in this analysis. The first is recursive feature elimination from the caret package. This method can be computationally intensive and takes more time to run, and uses backwards selection and random forest models to consider subsets of features and their interactions, using cross-validation to select the optimal set of features. 
+
+```{r, echo = FALSE}
+mice_brandsma_stand$post <- mice_brandsma_stand$tapo + mice_brandsma_stand$tlpo
+
+mice_brandsma_stand$post <- standardize(mice_brandsma_stand$post)
+
+control <- rfeControl(functions = rfFuncs, method = "cv", number = 10)
+
+# Apply RFE
+results <- rfe(mice_brandsma_stand[, -c(1:2, 11:12, 15)], mice_brandsma_stand$post, sizes = c(1:5), rfeControl = control)
+
+# Selected features
+print(predictors(results))
+
+```
+
+The features selected based on this method are the following: apr, tlpr, tiqv, iqp, tses, rpg, tssi, den, min, and sex.
+
+The other method of feature selection we will use is feature selection through LASSO, which is implemented through the glmnet package. We use the same response variable of post. 
+
+```{r, echo = FALSE}
+# Prepare data set
+x <- as.matrix(mice_brandsma_stand[, -c(1:2, 11:12, 15)])
+y <- mice_brandsma_stand$post
+
+# Apply LASSO
+lasso_model <- cv.glmnet(x, y, alpha = 1)
+best_lambda <- lasso_model$lambda.min
+selected_features <- rownames(coef(lasso_model, s = best_lambda))[coef(lasso_model, s = best_lambda)[,1] != 0]
+print(selected_features)
+```
+
+The features selected are the following: sex, min, rpg, den, tlpr, tses, tssi, tiqv, apr, and iqp.
+
+Both of these methods selected all of the features that were originally included. This may have to do with the large sample size of the dataset. Small p-values were observed in the original linear models we created as well for all of these predictors except for min. 
+
+## Feature Creation
+
+The process of feature creation in this report will consist of a few analytic tasks. 
+
+To begin, sparse categories were identified in the original exploratory analysis in the variable rpg, where there were only 10 observations with 2 repeated groups. Therefore, I will create a binary variable that identifies if an observation had repeated groups or not, combining a rpg value of 1 and 2 into one category. 
+
+```{r, echo = FALSE}
+summary(mice_brandsma_stand[, c(3:6)])
+
+mice_brandsma_stand <- mice_brandsma_stand %>% mutate(
+  has_repeated_group = case_when(
+    rpg == 0 ~ 0,
+    rpg == 1 ~ 1,
+    rpg == 2 ~ 1,
+  )
+)
+
+mice_brandsma_stand$has_repeated_group <- as.factor(mice_brandsma_stand$has_repeated_group)
+
+summary(mice_brandsma_stand$has_repeated_group)
+
+```
+The categories for min, has_repeated_group, and den are still unbalanced in terms of sample size; however, without a meaningful way to combine the categories in den and only two categories in the other features, any issues that may arise due to these imbalances would best be mitigated through a different analytic technique than category regrouping.
+
+PCA, or principal component analysis, can be used to simplify the dataset, especially when there are a number of highly correlated variables in the dataset by creating new variables that are linear combinations of the original variables that are uncorrelated with each other and maximize the amount of information conveyed in the first few principal components. We will investigate its applicability to this dataset. We will also use clustering methods such as k-means clustering in combination with PCA to create plots of the clusters to investigate the existence of defined groupings in the dataset.
+
+To begin, we will look at the correlations between numerical features in the data
+
+```{r, echo = FALSE}
+ggpairs(mice_brandsma_stand,          # Data frame
+        columns = c(7:14),         # Columns
+        aes(alpha = 0.5))
+
+```
+
+There are some features that do show notable positive correlations, such as the transformed language pre-score and the transformed language post-score, which have a correlation of 0.715, as well as the transformed arithmetic post-score and the transformed language post-score, which have a correlation of 0.709. However, we don't see any features that are obviously highly correlated at r = 0.8-1.0.
+
+Highly correlated features can create issues in regression analysis, leading to multicollinearity and overfitting. Principal component analysis uses linear combinations of features to create "principal components" that are designed to have as little correlation between them as possible. This can be used to reduce the dimensionality of the data, capturing much of its variability in fewer principal components than the number of variables in the original data, simplifying future analysis procedures. 
+
+We will attempt PCA on all of the features in this dataset to examine its usefulness. 
+
+```{r, echo = FALSE}
+pca <- prcomp(mice_brandsma_stand[, c(7:14)], scale = TRUE)
+pca0=cbind(mice_brandsma_stand, pca$x)
+
+summary(pca)
+      
+pca.var <- (pca$sdev)^2    # or simply apply(pca$x, 2, var)
+plot(pca, type='l', ylim=c(0,5), xlim=c(1,8.5),
+     main = "Variances of Individual PCs : Scree Plot")
+text((1:8)+0.2, pca.var+.2, as.character(round(pca.var, 4)))
+```
+
+Using PCA, we can see that the first two prinicipal components capture 66.3% of the variance in the dataset, the first three capture 75%, and the first four capture over 80%. The scree plot shows that after the first principal component, the decreases in variances with each added principal component slows drastically and progresses more or less evenly between PC3 and PC8. The elbow on the screeplot appears around the 2nd or 3rd principal component, and if one is okay with capturing 75% of the variability in the dataset, the first 3 PCs can be utilized for future analysis. However, if we would prefer a threshold of 85% then we would need 5 PCs and a threshold of 95% would require 7 PCs. In general, while PCA is definitely usable, the features don't show enough correlation between themselves where I would consider it extremely effective in terms of future analysis and its applicability should be weighed on interpretability and its relevance depending on the chosen response variable in future regression analysis. 
+
+We will also use the first two PCs to visualize clustering algorithms such as k-means clustering. K-means is a distance based algorithm that partitions points in a dataset into groups in order to minimize the distance between each point and the centroid of the group (4). We will use an elbow plot to identify the ideal number of clusters. 
+
+```{r, echo = FALSE}
+wss = NULL
+K = 15
+for (i in 1:K){
+  wss[i] = kmeans(mice_brandsma_stand[, c(7:14)], i, 1 )$tot.withinss
+ }
+## elbow plot
+plot(1:K, wss, type ="b",
+          col= "blue",
+          xlab="Number of Clusters",
+          ylab = "WSS",
+          main = "Elbow Plot for Selecting Optimal Number of Clusters")
+
+```
+
+We see an obvious drop off from 1 to 2 clusters, then a smoother decline for higher values of k. The most appropriate elbow point seems to be around k=3. 
+
+We can graph the dataset across its first and second principal components and then visualize the clusters using clusplot() from the R library cluster.
+
+```{r, echo = FALSE}
+km.brandsma <- kmeans(mice_brandsma_stand[, c(7:14)], centers = 3)  
+km.clust.ID <- km.brandsma$cluster        # extracting cluster IDs
+
+clusplot(mice_brandsma_stand[, c(7:14)],
+ km.clust.ID,
+ lines = 0,
+ shade = TRUE,
+ color = TRUE,
+ labels = 1,
+ plotchar = FALSE,
+ span = TRUE,
+ main = paste("K-means clustering across first and second principal components for standardized brandsma dataset")
+)
+
+```
+
+Looking purely at the datapoints when graphed across the principal components, we don't see much evidence of explicit clustering in this dataset. The clusters identified by k-means clustering seem to horizontally across varying values of PC1 while not really depending on the values of PC2. Without much obvious evidence in favor of clustering according to the scatterplot we made over the first and second principal components, it doesn't seem like clustering methods are the most appropriate features to implement in future analysis of this data.
+
+# Conclusion
+
+This analysis of the brandsma dataset on secondary school students and their test scores in Language and Arithmetic is a follow-up on an initial exploratory analysis (2) in order to create a final analysis dataset for future modeling and analytic activities. This report can be broken up into two main sections: 1) missing data imputation and 2) feature engineering. 
+
+For missing data imputation, we used methods of k-nearest neighbors imputation, regression imputation, and multiple imputation through the R mice library. In order to retain as much information as possible, we chose to use multiple imputation for the final analytic dataset. However, there are limitations to multiple imputation through MICE that include the propagation of errors throughout the data and its inability to handle cases of MNAR missing data. 
+
+For feature engineering, analytic tasks were split between three main categories: 1) feature transformation, 2) feature selection, and 3) feature creation. Skewed features were transformed through Box-cox transformations and then standardized to increase the applicability of distance-based algorithms, features were selected through two feature selection algorithms which showed that all features in the dataset are worthy of inclusion in future analysis, and sparse categories were handled through regrouping and PCA and clustering algorithms were considered for their relevance in future analysis. While PCA may be applicable based on the goals of future analysis, there didn't appear to be strong evidence in support of the use of clustering for future analytic tasks. 
+
+The created analytic dataset can now be used for future model building and prediction. 
+
+# References and Appendix
+
+(1) https://amices.org/mice/reference/brandsma.html
+
+(2) https://xiang-a.github.io/sta552-project1/
+ 
+(3) https://bmcmedinformdecismak.biomedcentral.com/articles/10.1186/s12911-016-0318-z
+
+(4) https://www.ibm.com/think/topics/k-means-clustering
